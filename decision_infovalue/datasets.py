@@ -9,7 +9,7 @@ import os
 from urllib.request import urlretrieve
 import numpy as np
 
-github_data_url: Final[str] = "https://github.com/Guoziyang27/decision_infovalue/raw/main/data/"
+github_data_url: Final[str] = "./data/"
 
 def load_housing_data(with_human_data: bool = True) -> Tuple[pd.DataFrame, Dict[str, Any]]:
     """
@@ -208,14 +208,15 @@ def get_dataset(name: str, **kwargs) -> Tuple[pd.DataFrame, pd.Series, Dict[str,
         raise ValueError(f"Unknown dataset: {name}. Available datasets: 'housing', 'recidivism', 'cxr', 'deepfake', 'haiid'") 
     
 def cache(url: str, file_name: str | None = None) -> str:
-    """Loads a file from the URL and caches it locally."""
-    if file_name is None:
-        file_name = os.path.basename(url)
-    data_dir = os.path.join(os.path.dirname(__file__), "cached_data")
-    os.makedirs(data_dir, exist_ok=True)
+    return url
+    # """Loads a file from the URL and caches it locally."""
+    # if file_name is None:
+    #     file_name = os.path.basename(url)
+    # data_dir = os.path.join(os.path.dirname(__file__), "cached_data")
+    # os.makedirs(data_dir, exist_ok=True)
 
-    file_path: str = os.path.join(data_dir, file_name)
-    if not os.path.isfile(file_path):
-        urlretrieve(url, file_path)
+    # file_path: str = os.path.join(data_dir, file_name)
+    # if not os.path.isfile(file_path):
+    #     urlretrieve(url, file_path)
 
-    return file_path
+    # return file_path
