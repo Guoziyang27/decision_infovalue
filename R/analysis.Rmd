@@ -1,0 +1,259 @@
+---
+title: "Untitled"
+output: html_document
+date: "2025-05-08"
+---
+
+```{r setup, include=FALSE}
+knitr::opts_chunk$set(echo = TRUE)
+library(brms)
+library(dplyr)
+library(ggplot2)
+library(tidybayes)
+library(ggdist)
+library(tidyr)
+library(purrr)
+library(cowplot)
+library(ggsignif)
+library(scales)
+```
+
+# Load data
+
+```{r}
+exp_df = read.csv("data/exp_df_real_exp.csv")
+exp_df
+```
+
+# Cleaning data
+
+```{r}
+# Remove participants who did not revise their response after the first round
+no_revise_prolific_pids = (exp_df %>% group_by(PROLIFIC_PID, AI, explanation) %>% summarise(a = sum(human_response == hai_response)) %>% filter(a == 12))$PROLIFIC_PID
+
+# Calculate the number of consecutive same human responses
+consecutive_human_response = c(1)
+for (i in 2:length(exp_df$human_response)) {
+  if (exp_df$human_response[[i]] == exp_df$human_response[[i-1]]) {
+    consecutive_human_response = c(consecutive_human_response, consecutive_human_response[i-1] + 1)
+  } else {
+    consecutive_human_response = c(consecutive_human_response, 1)
+  }
+}
+exp_df$consecutive_human_response = consecutive_human_response
+
+# Calculate the number of consecutive same AI responses
+consecutive_hai_response = c(1)
+for (i in 2:length(exp_df$hai_response)) {
+  if (exp_df$hai_response[[i]] == exp_df$hai_response[[i-1]]) {
+    consecutive_hai_response = c(consecutive_hai_response, consecutive_hai_response[i-1] + 1)
+  } else {
+    consecutive_hai_response = c(consecutive_hai_response, 1)
+  }
+}
+exp_df$consecutive_hai_response = consecutive_hai_response
+repeat_response_prolific_pids = (exp_df %>% group_by(PROLIFIC_PID, AI, explanation) %>% summarise(a = any((consecutive_hai_response >= 5) | (consecutive_human_response >= 5))) %>% filter(a == T))$PROLIFIC_PID
+
+high_rel_error_prolific_pid = (exp_df %>% group_by(PROLIFIC_PID, AI, explanation) %>% summarise(a = ((human_response * 1000 - SalePrice) > 5 * SalePrice) &  ((hai_response * 1000 - SalePrice) > 5 * SalePrice)) %>% filter(a == T))$PROLIFIC_PID
+```
+
+# Plot the distribution of the relative error in the observed data
+```{r}
+exp_df.mod = exp_df |> 
+  filter(!(PROLIFIC_PID %in% high_rel_error_prolific_pid) & !(PROLIFIC_PID %in% repeat_response_prolific_pids) & !(PROLIFIC_PID %in% no_revise_prolific_pids)) %>%
+  pivot_longer(cols = c(human_response, hai_response), names_to = "block", values_to = "response", names_pattern = "([a-z]+)_response") |> 
+  mutate(rel_error = (response*1000 - SalePrice)/SalePrice)
+  # filter(abs(rel_error) <= 5)
+
+exp_df.mod |> 
+  ggplot() +
+  geom_density(aes(x = rel_error), color = "red", size = 1, alpha = 1) +
+  geom_vline(aes(xintercept = 0), size = 1, alpha = 1) +
+  coord_cartesian(xlim = c(-2, 5)) +
+  facet_grid(AI ~ explanation) +
+  labs(subtitle = "Posterior predictive distribution for probability of superiority") +
+  theme(panel.grid = element_blank())
+```
+
+# Calculate the number of participants in each condition
+```{r}
+filtered_exp_df = exp_df |> 
+  filter(!(PROLIFIC_PID %in% high_rel_error_prolific_pid) & !(PROLIFIC_PID %in% repeat_response_prolific_pids) & !(PROLIFIC_PID %in% no_revise_prolific_pids))
+
+(filtered_exp_df %>% group_by(AI, explanation) %>% summarise(count = n() / 12))
+(filtered_exp_df %>% group_by(AI) %>% summarise(count = n() / 12))
+```
+
+# The priors for the model
+
+
+```{r}
+priors_rel_error <-  c(
+  # Priors for fixed effects of the location (rel_error)
+  prior(normal(0, 1), class = b),
+  prior(normal(0, 2.5), class = Intercept),
+
+  # Priors for random effects of the location (rel_error)
+  prior(cauchy(0, 1), class = sd, group = "PROLIFIC_PID"),
+
+  # Priors for fixed effects of the scale (sigma)
+  prior(normal(0, 1), class = b, dpar = "sigma"),
+  prior(normal(0, 2.5), class = Intercept, dpar = "sigma"),
+
+  # Priors for random effects of the scale (sigma)
+  prior(cauchy(0, 1), class = sd, group = "PROLIFIC_PID", dpar = "sigma"),
+
+  # Prior for the degrees of freedom (nu)
+  prior(gamma(2, 0.1), class = nu) # Or prior(exponential(0.1), class = nu)
+)
+```
+
+# Fit the model
+
+```{r}
+rel_error_model = brm(data = exp_df.mod, 
+                   formula = bf(rel_error ~ AI*explanation + block + (1| PROLIFIC_PID), 
+                                   sigma ~ AI*explanation + block + (1| PROLIFIC_PID)),
+              prior = priors_rel_error, family = "student",
+              iter = 20000, warmup = 8000, chains = 4, cores = 4,
+              file = "brms_model_fits/lo_rel_error_mdl") # The fit object is saved to the file, delete if you want to fit the model again
+rel_error_model
+```
+
+# Plot the posterior predictive distribution for the relative error
+```{r}
+exp_df.mod %>% add_predicted_draws(rel_error_model, ndraws = 50) %>%
+ggplot() +
+  geom_density(aes(x = rel_error), color = "red", size = 1, alpha = 1) +
+  geom_density(aes(x = .prediction, group = .draw), color = "blue", size = 0.1, alpha = 0.5) +
+  geom_vline(aes(xintercept = 0), size = 0.5, alpha = 1) +
+  xlim(-5, 5) +
+  scale_y_continuous(NULL, breaks = NULL) +
+  facet_wrap(vars(AI, explanation)) +
+  labs(subtitle = "Posterior predictive distribution for probability of superiority") +
+  theme(panel.grid = element_blank())
+```
+
+# Generate the data for the plot
+```{r}
+plot_df = filtered_exp_df %>%
+  mutate(row_id = row_number()) %>%
+  pivot_longer(cols = c(human_response, hai_response), names_to = "block", values_to = "response", names_pattern = "([a-z]+)_response") %>%
+  add_predicted_draws(rel_error_model, ndraws = 500, value = "rel_error", seed = 12345) %>%
+  mutate(condition = paste(AI, explanation)) %>%
+  pivot_wider(names_from = block, values_from = rel_error) %>% 
+  group_by(row_id, AI, explanation, PROLIFIC_PID, Order) %>% 
+  summarise(human_error = mean(human, na.rm = T), hai_error = mean(hai, na.rm = T))
+
+```
+
+# The significance test
+
+```{r}
+plot_df = plot_df %>% mutate(condition = paste(AI, explanation, sep = "_"),
+                             diff_error = abs(human_error) - abs(hai_error))
+
+compared_conditions = list(c("pred1_none", "pred2_none"), 
+                           c("pred1_none", "pred1_shap"),
+                           c("pred1_none", "pred1_both"),
+                           
+                           c("pred1_shap", "pred2_shap"),
+                           c("pred1_shap", "pred1_both"),
+                           
+                           c("pred1_both", "pred2_both"),
+                           c("pred1_both", "pred2_shap"),
+                           c("pred1_both", "pred2_none"),
+                           
+                           c("pred2_none", "pred2_shap"),
+                           c("pred2_none", "pred2_both"),
+                           c("pred2_shap", "pred2_both"))
+
+all_conditions = c("pred1_none", "pred2_none", "pred1_shap", "pred2_shap", "pred1_both", "pred2_both")
+
+for (condition in all_conditions) {
+  for (condition2 in all_conditions) {
+    if (condition2 == condition)
+      next
+    print(paste(cond1, cond2))
+    result = t.test((plot_df%>%filter(condition==cond1))$diff_error, 
+         (plot_df%>%filter(condition==cond2))$diff_error, 
+         alternative = c("two.sided", "less", "greater"), var.equal = FALSE)
+  }
+}
+print(t.test((plot_df%>%filter(AI == "pred1"))$diff_error, 
+       (plot_df%>%filter(AI == "pred2"))$diff_error, 
+       alternative = c("two.sided", "less", "greater"), var.equal = FALSE))
+
+```
+
+# Plot the bar plot
+```{r}
+dev_d = 0.21
+bar_plot_df = rbind(plot_df %>%
+  group_by(explanation, AI) %>%
+  summarise(mean_payoff = mean(abs(human_error) - abs(hai_error)),
+            sd_payoff = sd(abs(human_error) - abs(hai_error)),
+            e = qt(0.975,df=n()-1)*sd_payoff/sqrt(n())),
+  plot_df %>%
+  group_by(AI) %>%
+  summarise(mean_payoff = mean(abs(human_error) - abs(hai_error)),
+            sd_payoff = sd(abs(human_error) - abs(hai_error)),
+            e = qt(0.975,df=n()-1)*sd_payoff/sqrt(n())) %>%
+    mutate(explanation = "Collapsing all explanations")) %>%
+  mutate(explanation = ifelse(explanation == "both", "ILIV-SHAP and SHAP", ifelse(explanation == "shap", "SHAP", ifelse(explanation == "none", "None", explanation)))) %>%
+  mutate(AI = ifelse(AI == "pred1", "AI1", "AI2")) %>%
+  mutate(explanation = factor(explanation,
+                        levels = c("ILIV-SHAP and SHAP", "SHAP", "None", "Collapsing all explanations")))
+annotation_df = data.frame(x = rep(1:4, each = 2) + rep(c(-dev_d, dev_d), 4),
+                           y = bar_plot_df$mean_payoff + bar_plot_df$e + 0.01,
+                           label = paste(paste(round(bar_plot_df$mean_payoff, digits = 4) * 100, "%", sep=""),
+                                         "\n [", 
+                                         paste(round(bar_plot_df$mean_payoff - bar_plot_df$e, digits = 4) * 100, "%", sep=""),
+                                         ", ", 
+                                         paste(round(bar_plot_df$mean_payoff + bar_plot_df$e, digits = 4) * 100, "%", sep=""),
+                                         "]", sep=""))
+bar_plot_df %>%
+  ggplot() +
+  geom_bar(aes(y = mean_payoff, x = explanation, fill = AI), stat = "identity", color = NA,
+             position=position_dodge(), alpha = .7) +
+  geom_errorbar(
+    aes(ymin = mean_payoff - e, ymax = mean_payoff + e, x = explanation, group =  AI),
+    position = position_dodge(width = 0.9),
+    width = 0.1, size=0.3
+  ) +
+  scale_y_continuous(labels = percent, limits = c(0, 0.1)) +
+  scale_fill_manual(values = c("#1f78b4", "#a6cee3")) +
+  labs(title = "Reduction in APE", y = "", x = "") +
+    theme_bw() +
+   theme(legend.position=c(0.9, 0.2), legend.title = element_blank(), plot.title = element_text(hjust = 0.5),) +
+  annotate("text",
+           x = annotation_df$x,
+           y = annotation_df$y,
+           label = annotation_df$label,
+           size = 3)
+```
+
+```{r}
+ggsave("./exp_result.pdf", unit = "in", width = 12 * 0.65, height = 6 * 0.65)
+```
+
+# Calculate the mean and CI of the relative error
+
+```{r}
+rbind(plot_df %>%
+  group_by(explanation, AI) %>%
+  summarise(mean_payoff = mean(abs(human_error) - abs(hai_error)),
+            sd_payoff = sd(abs(human_error) - abs(hai_error)),
+            e = qt(0.975,df=n()-1)*sd_payoff/sqrt(n())) %>%
+    mutate(low_CI95 = mean_payoff - e,
+           high_CI95 = mean_payoff + e),
+  plot_df %>%
+  group_by(AI) %>%
+  summarise(mean_payoff = mean(abs(human_error) - abs(hai_error)),
+            sd_payoff = sd(abs(human_error) - abs(hai_error)),
+            e = qt(0.975,df=n()-1)*sd_payoff/sqrt(n())) %>% 
+    mutate(explanation = "Collapsing all explanations") %>%
+    mutate(low_CI95 = mean_payoff - e,
+           high_CI95 = mean_payoff + e)) %>% select(AI, explanation, mean_payoff, low_CI95, high_CI95)
+```
+
