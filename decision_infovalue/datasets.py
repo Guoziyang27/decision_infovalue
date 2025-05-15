@@ -9,7 +9,7 @@ import os
 from urllib.request import urlretrieve
 import numpy as np
 
-github_data_url: Final[str] = "https://github.com/Guoziyang27/decision-infovalue/raw/main/data/"
+github_data_url: Final[str] = "https://github.com/Guoziyang27/decision_infovalue/raw/main/data/"
 
 def load_housing_data(with_human_data: bool = True) -> Tuple[pd.DataFrame, Dict[str, Any]]:
     """
