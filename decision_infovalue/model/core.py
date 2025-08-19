@@ -4,9 +4,9 @@ Core API functionality for the Decision Info Model.
 from typing import Dict, List, Optional, Union, Tuple, Callable, Any
 import numpy as np
 import pandas as pd
-from decision_infovalue.scoring_rules import _brier_score, _mse_score, _log_loss, _define_v_shaped_scoring_rule
+from decision_infovalue.scoring_rules import _brier_score, _mse_score, _log_loss, _define_v_shaped_scoring_rule, _accuracy
 from math import floor
-from decision_infovalue.rational_agent import _calculate_rational_payoff
+from decision_infovalue.rational_agent import _calculate_rational_payoff, _linear_constraint_rational_payoff
 from itertools import combinations
 import math
 
@@ -35,12 +35,13 @@ class DecisionInfoModel:
     def __init__(self, dgp_data: pd.DataFrame, 
                  state: str,
                  signals: List[str] | None = None,
-                 scoring_rule: str = 'brier', 
-                 binning_method: str = 'equal_probability',
+                 scoring_rule: str | Callable = 'brier', 
+                 binning_method: str | None = 'equal_probability',
                  overfit_tolerance: float = 0.1,
                  fit_test_ratio: float = 0.8, 
                  use_cache: bool = True,
-                 verbose: bool = False):
+                 verbose: bool = False,
+                 ra_agg_func: str = "mean"):
         """Initialize the Decision Info Model. Estimate the DGP from the observed data (containing the coarsening process to avoid overfitting), and calculate the full information value and the no information value.
         
         Args:
@@ -53,7 +54,7 @@ class DecisionInfoModel:
             fit_test_ratio: float, the ratio of the data used to fit the model and the data used to test the model
             use_cache: bool, whether to use cache when calculating the complement information value and the instance-level complement information value
             verbose: bool, whether to print verbose output
-        
+            ra_agg_func: str, the aggregation function used to calculate the rational action. "mean" for mean, "median" for median, "mode" for mode, or a callable function
         Raises:
             ValueError: If the input data is invalid
         """
@@ -67,6 +68,10 @@ class DecisionInfoModel:
             self.scoring_rule = _mse_score
         elif scoring_rule == 'log_loss':
             self.scoring_rule = _log_loss
+        elif scoring_rule == 'accuracy':
+            self.scoring_rule = _accuracy
+        elif callable(scoring_rule):
+            self.scoring_rule = scoring_rule
         elif 'v_shaped' in scoring_rule:
             try:
                 kink = float(scoring_rule.split('_')[-1])
@@ -78,12 +83,12 @@ class DecisionInfoModel:
         else:
             raise ValueError(f"Invalid scoring rule: {scoring_rule}, must be 'brier', 'mse', 'log_loss', or 'v_shaped_{{kink}}'")
         
-        if binning_method != 'equal_probability' and binning_method != 'equal_interval':
-            raise ValueError(f"Invalid binning method: {binning_method}, must be 'equal_probability' or 'equal_interval'")
+        if binning_method != 'equal_probability' and binning_method != 'equal_interval' and binning_method is not None:
+            raise ValueError(f"Invalid binning method: {binning_method}, must be 'equal_probability' or 'equal_interval' or None")
 
         # Define state
         self.state = state
-        if self.dgp_data[self.state].nunique() != 2 and self.scoring_rule != _mse_score:
+        if self.dgp_data[self.state].nunique() != 2 and (self.scoring_rule != _mse_score and not callable(self.scoring_rule)):
             raise ValueError(f"State {self.state} must have exactly 2 unique values for the scoring rule {self.scoring_rule.__name__}")
 
         # Define signals
@@ -95,15 +100,20 @@ class DecisionInfoModel:
             self._cache: Dict[str, Tuple[float, Tuple[float, float]]] = {}
         else:
             self._cache = None
-
+        
+        self.ra_agg_func = ra_agg_func
         self.binning_method = binning_method
         self.overfit_tolerance = overfit_tolerance
         self.fit_test_ratio = fit_test_ratio
+        if binning_method is not None:
+            self.all_use_data, self.all_breaks = self._find_opt_binning(self.full_signals, binning_method, overfit_tolerance, fit_test_ratio, verbose)
+        else:
+            self.all_use_data = self.dgp_data
+            self.all_breaks = {feature: None for feature in self.full_signals}
 
-        self.all_use_data, self.all_breaks = self._find_opt_binning(self.full_signals, binning_method, overfit_tolerance, fit_test_ratio, verbose)
-
-        self.full_info_value = _calculate_rational_payoff(self.full_signals, self.all_use_data, self.all_use_data, self.state, self.scoring_rule)
-        self.no_info_value = _calculate_rational_payoff([], self.all_use_data, self.all_use_data, self.state, self.scoring_rule)
+        
+        self.full_info_value = _calculate_rational_payoff(self.full_signals, self.all_use_data, self.all_use_data, self.state, self.scoring_rule, agg_func=self.ra_agg_func)
+        self.no_info_value = _calculate_rational_payoff([], self.all_use_data, self.all_use_data, self.state, self.scoring_rule, agg_func=self.ra_agg_func)
 
     def _test_overfit(self, signals: List[str], data: pd.DataFrame, training_ratio: float, overfit_tolerance: float, verbose: bool = False) -> bool:
         """
@@ -113,10 +123,10 @@ class DecisionInfoModel:
         test_data = data[floor(len(data) * training_ratio):]
         training_rational_payoff = _calculate_rational_payoff(signals, 
                                                               training_data, training_data, 
-                                                              self.state, self.scoring_rule)
+                                                              self.state, self.scoring_rule, agg_func=self.ra_agg_func)
         test_rational_payoff = _calculate_rational_payoff(signals, 
                                                           training_data, test_data, 
-                                                          self.state, self.scoring_rule)
+                                                          self.state, self.scoring_rule, agg_func=self.ra_agg_func)
         if verbose:
             print(f"Training rational payoff: {training_rational_payoff}, Test rational payoff: {test_rational_payoff}, Overfit ratio: {(training_rational_payoff - test_rational_payoff) / abs(training_rational_payoff)}")
         return (training_rational_payoff - test_rational_payoff) < overfit_tolerance * abs(training_rational_payoff)
@@ -183,6 +193,7 @@ class DecisionInfoModel:
         
     def complement_info_value(self, signals: List[str] | str, 
                               base_signals: List[str] | str | None = None, 
+                              constraint_rational_agent: str = "none",
                               ret_std: bool = False) -> float:
         
         '''
@@ -211,16 +222,22 @@ class DecisionInfoModel:
                     return self._cache[cache_key]
                 else:
                     return self._cache[cache_key][0]
+        if constraint_rational_agent == "none":
+            func_rational_payoff = _calculate_rational_payoff
+        elif constraint_rational_agent == "linear":
+            func_rational_payoff = _linear_constraint_rational_payoff
+        else:
+            raise ValueError(f"Invalid constraint rational agent: {constraint_rational_agent}, must be 'none' or 'linear'")
         # all_use_data, _ = self._find_opt_binning(signals + base_signals, self.binning_method, self.overfit_tolerance, self.test_fit_ratio)
         if ret_std:
-            all_payoff, all_std = _calculate_rational_payoff(signals + base_signals, self.all_use_data, self.all_use_data, self.state, self.scoring_rule, ret_std)
-            no_payoff, no_std = _calculate_rational_payoff(base_signals, self.all_use_data, self.all_use_data, self.state, self.scoring_rule, ret_std)
+            all_payoff, all_std = func_rational_payoff(signals + base_signals, self.all_use_data, self.all_use_data, self.state, self.scoring_rule, ret_std, agg_func=self.ra_agg_func)
+            no_payoff, no_std = func_rational_payoff(base_signals, self.all_use_data, self.all_use_data, self.state, self.scoring_rule, ret_std, agg_func=self.ra_agg_func)
             if self._cache is not None:
-                self._cache[cache_key] = (all_payoff - no_payoff, max(all_std,no_std))
-            return all_payoff - no_payoff, max(all_std,no_std)
+                self._cache[cache_key] = (all_payoff - no_payoff, min(all_std,no_std))
+            return all_payoff - no_payoff, min(all_std,no_std)
         else:
-            all_payoff = _calculate_rational_payoff(signals + base_signals, self.all_use_data, self.all_use_data, self.state, self.scoring_rule)
-            no_payoff = _calculate_rational_payoff(base_signals, self.all_use_data, self.all_use_data, self.state, self.scoring_rule)
+            all_payoff = func_rational_payoff(signals + base_signals, self.all_use_data, self.all_use_data, self.state, self.scoring_rule, agg_func=self.ra_agg_func)
+            no_payoff = func_rational_payoff(base_signals, self.all_use_data, self.all_use_data, self.state, self.scoring_rule, agg_func=self.ra_agg_func)
             if self._cache is not None:
                 self._cache[cache_key] = (all_payoff - no_payoff, None)
             return all_payoff - no_payoff
@@ -307,14 +324,14 @@ class DecisionInfoModel:
         eval_data = self.all_use_data.loc[np.all(self.all_use_data[signals] == instance_signal_values, axis=1), :]
         use_data = self.all_use_data.loc[np.all(self.all_use_data[counterfactual_signal] == counterfactual_signal_values, axis=1), :]
         if ret_std:
-            all_payoff, all_std = _calculate_rational_payoff(base_signals, use_data, eval_data, self.state, self.scoring_rule, ret_std)
-            no_payoff, no_std = _calculate_rational_payoff(base_signals, self.all_use_data, eval_data, self.state, self.scoring_rule, ret_std)
+            all_payoff, all_std = _calculate_rational_payoff(base_signals, use_data, eval_data, self.state, self.scoring_rule, ret_std, agg_func=self.ra_agg_func)
+            no_payoff, no_std = _calculate_rational_payoff(base_signals, self.all_use_data, eval_data, self.state, self.scoring_rule, ret_std, agg_func=self.ra_agg_func)
             if self._cache is not None:
                 self._cache[cache_key] = (all_payoff - no_payoff, max(all_std, no_std))
             return all_payoff - no_payoff, max(all_std, no_std)
         else:
-            all_payoff = _calculate_rational_payoff(base_signals, use_data, eval_data, self.state, self.scoring_rule)
-            no_payoff = _calculate_rational_payoff(base_signals, self.all_use_data, eval_data, self.state, self.scoring_rule)
+            all_payoff = _calculate_rational_payoff(base_signals, use_data, eval_data, self.state, self.scoring_rule, agg_func=self.ra_agg_func)
+            no_payoff = _calculate_rational_payoff(base_signals, self.all_use_data, eval_data, self.state, self.scoring_rule, agg_func=self.ra_agg_func)
             if self._cache is not None:
                 self._cache[cache_key] = (all_payoff - no_payoff, None)
             return all_payoff - no_payoff
@@ -356,10 +373,10 @@ class DecisionInfoModel:
         diff_list = []
         for kink in np.linspace(0, 1, grid_size):
             mscoring_rule = _define_v_shaped_scoring_rule(kink)
-            signal_aciv = _calculate_rational_payoff(signals + base_signals, self.all_use_data, self.all_use_data, self.state, mscoring_rule) - \
-            _calculate_rational_payoff(base_signals, self.all_use_data, self.all_use_data, self.state, mscoring_rule)
-            compared_signal_aciv = _calculate_rational_payoff(compared_signals + base_signals, self.all_use_data, self.all_use_data, self.state, mscoring_rule) - \
-            _calculate_rational_payoff(base_signals, self.all_use_data, self.all_use_data, self.state, mscoring_rule)
+            signal_aciv = _calculate_rational_payoff(signals + base_signals, self.all_use_data, self.all_use_data, self.state, mscoring_rule, agg_func=self.ra_agg_func) - \
+            _calculate_rational_payoff(base_signals, self.all_use_data, self.all_use_data, self.state, mscoring_rule, agg_func=self.ra_agg_func)
+            compared_signal_aciv = _calculate_rational_payoff(compared_signals + base_signals, self.all_use_data, self.all_use_data, self.state, mscoring_rule, agg_func=self.ra_agg_func) - \
+            _calculate_rational_payoff(base_signals, self.all_use_data, self.all_use_data, self.state, mscoring_rule, agg_func=self.ra_agg_func)
             diff = signal_aciv - compared_signal_aciv
             if not ret_diff:
                 if (diff < -1e-3):
@@ -405,8 +422,8 @@ class DecisionInfoModel:
         for left_combination in combintation_signals:
             exclude_combination = list(left_combination)
             combination = exclude_combination + signals
-            aciv = _calculate_rational_payoff(combination + base_signals, self.all_use_data, self.all_use_data, self.state, self.scoring_rule) - \
-                _calculate_rational_payoff(exclude_combination + base_signals, self.all_use_data, self.all_use_data, self.state, self.scoring_rule)
+            aciv = _calculate_rational_payoff(combination + base_signals, self.all_use_data, self.all_use_data, self.state, self.scoring_rule, agg_func=self.ra_agg_func) - \
+                _calculate_rational_payoff(exclude_combination + base_signals, self.all_use_data, self.all_use_data, self.state, self.scoring_rule, agg_func=self.ra_agg_func)
             shapley_aciv += aciv * math.factorial(len(exclude_combination)) * \
                 math.factorial(len(self.full_signals) - len(combination)) / \
                     math.factorial(len(self.full_signals) - len(signals) + 1)

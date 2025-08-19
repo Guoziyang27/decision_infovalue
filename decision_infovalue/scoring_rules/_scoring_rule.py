@@ -1,8 +1,12 @@
 import numpy as np
+import pdb
 
 def _brier_score(action, gt):
     return 1-(action - gt) ** 2
 
+
+def _accuracy(action, gt):
+    return (action == gt).astype(int)
 
 def _mse_score(action, gt):
     return -(action - gt) ** 2
