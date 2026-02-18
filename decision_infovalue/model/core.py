@@ -4,9 +4,9 @@ Core API functionality for the Decision Info Model.
 from typing import Dict, List, Optional, Union, Tuple, Callable, Any
 import numpy as np
 import pandas as pd
-from decision_infovalue.scoring_rules import _brier_score, _mse_score, _log_loss, _define_v_shaped_scoring_rule, _accuracy
+from decision_infovalue.scoring_rules import _brier_score, _mse_score, _log_loss, _define_v_shaped_scoring_rule, _accuracy, _threshold_accuracy
 from math import floor
-from decision_infovalue.rational_agent import _calculate_rational_payoff, _linear_constraint_rational_payoff
+from decision_infovalue.rational_agent import _calculate_rational_payoff, _linear_constraint_rational_payoff, _rational_decision, _linear_constraint_rational_decision
 from itertools import combinations
 import math
 
@@ -70,6 +70,8 @@ class DecisionInfoModel:
             self.scoring_rule = _log_loss
         elif scoring_rule == 'accuracy':
             self.scoring_rule = _accuracy
+        elif scoring_rule == 'threshold_accuracy':
+            self.scoring_rule = _threshold_accuracy
         elif callable(scoring_rule):
             self.scoring_rule = scoring_rule
         elif 'v_shaped' in scoring_rule:
@@ -189,12 +191,37 @@ class DecisionInfoModel:
             signals = [signals]
         if not all(signal in self.full_signals for signal in signals):
             raise ValueError("All signals must be in the definition of full signals")
-        
+    
+    def rational_decision(self, signals: List[str] | str, 
+                          signal_values: List[Any] | np.ndarray | str,
+                          constraint_rational_agent: str = "none") -> float:
+        """
+        Calculate the rational decision.
+        """
+        if isinstance(signals, str):
+            signals = [signals]
+        if isinstance(signal_values, str):
+            signal_values = [signal_values]
+        if isinstance(signal_values, list) and len(signal_values) != len(signals):
+            raise ValueError(f"Signal values must be the same length as signals: {len(signal_values)} != {len(signals)} or signal_values must be a string or a numpy array")
+        if isinstance(signal_values, np.ndarray) and signal_values.ndim == 1 and signal_values.shape[0] != len(signals):
+            raise ValueError(f"Signal values must be the same length as signals: {signal_values.shape[0]} != {len(signals)} or signal_values must be a string or a numpy array")
+        if isinstance(signal_values, np.ndarray) and signal_values.ndim == 2 and signal_values.shape[1] != len(signals):
+            raise ValueError(f"Signal values must be the same length as signals: {signal_values.shape[1]} != {len(signals)} or signal_values must be a string or a numpy array")
+        self._check_signals(signals)
+        if constraint_rational_agent == "none":
+            func_rational_decision = _rational_decision
+        elif constraint_rational_agent == "linear":
+            func_rational_decision = _linear_constraint_rational_decision
+        else:
+            raise ValueError(f"Invalid constraint rational agent: {constraint_rational_agent}, must be 'none' or 'linear'")
+        return func_rational_decision(signals, signal_values, self.all_use_data, self.all_use_data, self.state, self.scoring_rule, agg_func=self.ra_agg_func)
         
     def complement_info_value(self, signals: List[str] | str, 
                               base_signals: List[str] | str | None = None, 
                               constraint_rational_agent: str = "none",
-                              ret_std: bool = False) -> float:
+                              ret_std: bool = False,
+                              ret_orig_value: bool = False) -> float:
         
         '''
         Calculate the global complement information value of the signals (ACIV).
@@ -207,7 +234,9 @@ class DecisionInfoModel:
         Returns:
             float, the complement information value, if `ret_std` is `False`, otherwise, a tuple of the complement information value and the standard deviation
         '''
+        use_none_base_signals = False
         if base_signals is None:
+            use_none_base_signals = True
             base_signals = []
         if isinstance(signals, str):
             signals = [signals]
@@ -215,8 +244,8 @@ class DecisionInfoModel:
             base_signals = [base_signals]
         self._check_signals(signals)
         self._check_signals(base_signals)
-        if self._cache is not None:
-            cache_key = "global_" + str(tuple(signals)) + "_" + str(tuple(base_signals)) + "_" + str(ret_std)
+        if self._cache is not None and not ret_orig_value:
+            cache_key = "global_" + str(tuple(signals)) + "_" + (str(tuple(base_signals)) if not use_none_base_signals else "None") + "_" + str(ret_std)
             if cache_key in self._cache:
                 if ret_std:
                     return self._cache[cache_key]
@@ -228,19 +257,38 @@ class DecisionInfoModel:
             func_rational_payoff = _linear_constraint_rational_payoff
         else:
             raise ValueError(f"Invalid constraint rational agent: {constraint_rational_agent}, must be 'none' or 'linear'")
+        if ret_orig_value:
+            all_payoff = func_rational_payoff(signals + base_signals, self.all_use_data, self.all_use_data, self.state, self.scoring_rule, agg_func=self.ra_agg_func, ret_orig_value=True)
+            if not use_none_base_signals:
+                no_payoff = func_rational_payoff(base_signals, self.all_use_data, self.all_use_data, self.state, self.scoring_rule, agg_func=self.ra_agg_func, ret_orig_value=True)
+                return all_payoff - no_payoff
+            else:
+                return all_payoff
         # all_use_data, _ = self._find_opt_binning(signals + base_signals, self.binning_method, self.overfit_tolerance, self.test_fit_ratio)
         if ret_std:
             all_payoff, all_std = func_rational_payoff(signals + base_signals, self.all_use_data, self.all_use_data, self.state, self.scoring_rule, ret_std, agg_func=self.ra_agg_func)
             no_payoff, no_std = func_rational_payoff(base_signals, self.all_use_data, self.all_use_data, self.state, self.scoring_rule, ret_std, agg_func=self.ra_agg_func)
             if self._cache is not None:
-                self._cache[cache_key] = (all_payoff - no_payoff, min(all_std,no_std))
-            return all_payoff - no_payoff, min(all_std,no_std)
+                if not use_none_base_signals:
+                    self._cache[cache_key] = (all_payoff - no_payoff, max(all_std,no_std))
+                else:
+                    self._cache[cache_key] = (all_payoff, all_std)
+            if not use_none_base_signals:
+                return all_payoff - no_payoff, max(all_std,no_std)
+            else:
+                return all_payoff, all_std
         else:
             all_payoff = func_rational_payoff(signals + base_signals, self.all_use_data, self.all_use_data, self.state, self.scoring_rule, agg_func=self.ra_agg_func)
             no_payoff = func_rational_payoff(base_signals, self.all_use_data, self.all_use_data, self.state, self.scoring_rule, agg_func=self.ra_agg_func)
             if self._cache is not None:
-                self._cache[cache_key] = (all_payoff - no_payoff, None)
-            return all_payoff - no_payoff
+                if not use_none_base_signals:
+                    self._cache[cache_key] = (all_payoff - no_payoff, None)
+                else:
+                    self._cache[cache_key] = (all_payoff, None)
+            if not use_none_base_signals:
+                return all_payoff - no_payoff
+            else:
+                return all_payoff
     
     def instanse_complement_info_value(self, signals: List[str] | str, 
                                        instance_signal_values: List[str] | List[float] | List[int] | str | float | int,

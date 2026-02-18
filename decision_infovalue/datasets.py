@@ -123,7 +123,7 @@ def load_deepfake_data() -> Tuple[pd.DataFrame, Dict[str, Any]]:
     data_df = data_df[data_df['guess_round'] == 1]
     
     # Calculate ai_guess based on fake and c_score
-    data_df['ai_guess'] = np.where(~data_df['fake'], 1 - data_df['c_score'], data_df['c_score'])
+    data_df['ai_guess'] = np.where(data_df['fake'] == 0, 1 - data_df['c_score'], data_df['c_score'])
     
     # Select relevant columns
     data_df = data_df[['video', 'fake', 'human_guess', 'human_ai_guess', 'ai_guess']]

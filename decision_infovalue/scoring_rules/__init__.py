@@ -7,7 +7,8 @@ from ._scoring_rule import (
     _mse_score,
     _log_loss,
     _define_v_shaped_scoring_rule,
-    _accuracy
+    _accuracy,
+    _threshold_accuracy
 )
 
 
@@ -16,5 +17,6 @@ __all__ = [
     '_mse_score',
     '_log_loss',
     '_define_v_shaped_scoring_rule',
-    '_accuracy'
+    '_accuracy',
+    '_threshold_accuracy'
 ] 

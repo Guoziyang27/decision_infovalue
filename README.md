@@ -53,7 +53,6 @@ Decision-making". Our decision_infovalue package consists of one main class:
 The `notebooks` directory contains example Jupyter notebooks demonstrating how to use the toolkit:
 
 - `deepfake-example/deepfake_unexploited_infovalue.ipynb`: Shows how to analyze the unexploited information value in each features by human-alone/AI/human+AI decisions in deepfake detection, where humans and AI systems collaborate to identify fake videos
-- `recidivism-example/recidivism_prediction.ipynb`: Shows the SHAP explanations and ILIL-SHAP explanations for recidivsm prediction task.
 - `mimic-iv-CXR-example/cxr_human_ai_complementary.ipynb`: Analyzes chest X-ray diagnosis with human-AI collaboration. We compare the human-complementary information value of different Vision models and conduct a robustness analysis over a grid of V-shaped proper scoring rules.
 
 ## License

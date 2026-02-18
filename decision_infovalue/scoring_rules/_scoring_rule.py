@@ -8,6 +8,10 @@ def _brier_score(action, gt):
 def _accuracy(action, gt):
     return (action == gt).astype(int)
 
+
+def _threshold_accuracy(action, gt):
+    return ((action >= 0.5).astype(int) == gt).astype(int)
+
 def _mse_score(action, gt):
     return -(action - gt) ** 2
 

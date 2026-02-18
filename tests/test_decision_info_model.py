@@ -11,13 +11,13 @@ from decision_infovalue.datasets import get_dataset
 def test_calculate_aciv(sample_data):
     """Test the ACIV endpoint with sample data."""
     data, metadata = sample_data
-    model = DecisionInfoModel(data, "target", ['feature1', 'feature2'])
-    result1 = model.complement_info_value(['feature1'], ret_confidence=0.95)
-    result2 = model.complement_info_value(['feature2'], ret_confidence=0.95)
-    result3 = model.complement_info_value(['feature1', 'feature2'], ret_confidence=0.95)
-    result4 = model.complement_info_value(['feature2'], ['feature1'], ret_confidence=0.95)
-    result5 = model.complement_info_value(['feature1'], ['feature2'], ret_confidence=0.95)
-    # result6 = model.complement_info_value(['feature1', 'feature2'], ['feature1', 'feature2'], ret_confidence=0.95)
+    model = DecisionInfoModel(data, "target", ['feature1', 'feature2'], scoring_rule='mse')
+    result1 = model.complement_info_value(['feature1'], ret_std=True)
+    result2 = model.complement_info_value(['feature2'], ret_std=True)
+    result3 = model.complement_info_value(['feature1', 'feature2'], ret_std=True)
+    result4 = model.complement_info_value(['feature2'], ['feature1'], ret_std=True)
+    result5 = model.complement_info_value(['feature1'], ['feature2'], ret_std=True)
+    # result6 = model.complement_info_value(['feature1', 'feature2'], ['feature1', 'feature2'], ret_std=True)
     
     
     # Use pytest's built-in capfd fixture to capture output
@@ -38,7 +38,7 @@ def test_calculate_aciv(sample_data):
 def test_calculate_iliv(sample_data):
     """Test the ACIV endpoint with sample data."""
     data, metadata = sample_data
-    model = DecisionInfoModel(data, "target", ['feature1', 'feature2'])
+    model = DecisionInfoModel(data, "target", ['feature1', 'feature2'], scoring_rule='mse')
     result1 = model.instanse_complement_info_value(['feature1'], [0.1])
     result2 = model.instanse_complement_info_value(['feature2'], [0.5])
     # result3 = model.incomplete_complement_info_value(['feature1', 'feature2'], [0.1, 0.5])

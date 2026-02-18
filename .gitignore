@@ -53,3 +53,6 @@ Thumbs.db
 */cached_data/
 
 R/brms_model_fits/
+.Rproj.user
+notebooks/mimic-iv-CXR-example/files
+notebooks/mimic-iv-CXR-example/generalized-image-embeddings-for-the-mimic-chest-x-ray-dataset-1.0
