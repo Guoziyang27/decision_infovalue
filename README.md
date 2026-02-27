@@ -1,7 +1,6 @@
-# The Information Value in Human-AI Decision-making
+# Explaining and Improving Information Complementarities in Multi-Agent Decision-making
 
-This repository contains scripts and prompts for our paper "The Value of Information in Human-AI
-Decision-making". Our decision_infovalue package consists of one main class:
+This repository contains scripts and prompts for our paper "Explaining and Improving Information Complementarities in Multi-Agent Decision-making". Our decision_infovalue package consists of one main class:
 
 - Initialization function
   - Estimate the DGP from the observed data (containing the coarsening process to avoid overfitting), and calculate the full information value and the no information value.
